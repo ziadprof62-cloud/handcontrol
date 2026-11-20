@@ -6,6 +6,10 @@ import kotlin.math.min
  * Turns the model's per-frame output into stable gestures and fires
  * actions with a hold time (dwell). "Once" gestures fire one time per
  * hold and must be released; "repeat" gestures keep firing.
+ *
+ * After a PLAY / PAUSE fires, further PLAY / PAUSE gestures are ignored
+ * for ONCE_LOCKOUT_MS, so closing or opening the hand right after a
+ * command (fist <-> open palm) is not read as the opposite command.
  */
 class GestureEngine(private val onAction: (Action) -> Unit) {
 
@@ -28,17 +32,18 @@ class GestureEngine(private val onAction: (Action) -> Unit) {
 
     companion object {
         val DEFS = mapOf(
-            "Open_Palm" to Def("تشغيل", "ثبّت كفك مفتوحاً", Action.PLAY, false, 600),
-            "Closed_Fist" to Def("إيقاف", "ثبّت القبضة", Action.PAUSE, false, 600),
-            "Thumb_Up" to Def("رفع الصوت", "ابقِ الإبهام لأعلى", Action.VOLUME_UP, true, 250),
-            "Thumb_Down" to Def("خفض الصوت", "ابقِ الإبهام لأسفل", Action.VOLUME_DOWN, true, 250)
+            "Open_Palm" to Def("تشغيل", "ثبّت كفك مفتوحاً", Action.PLAY, false, 700),
+            "Closed_Fist" to Def("إيقاف", "ثبّت القبضة", Action.PAUSE, false, 700),
+            "Thumb_Up" to Def("رفع الصوت", "ابقِ الإبهام لأعلى", Action.VOLUME_UP, true, 300),
+            "Thumb_Down" to Def("خفض الصوت", "ابقِ الإبهام لأسفل", Action.VOLUME_DOWN, true, 300)
         )
 
-        const val MIN_SCORE = 0.60f
-        const val HISTORY = 5
-        const val MIN_MATCHES = 3
-        const val NO_HAND_FRAMES = 6
-        const val REPEAT_MS = 250L
+        const val MIN_SCORE = 0.70f        // minimum model confidence
+        const val HISTORY = 7              // frames used for voting
+        const val MIN_MATCHES = 5          // votes needed to accept a gesture
+        const val NO_HAND_FRAMES = 6       // frames without a hand before reset
+        const val REPEAT_MS = 250L         // volume repeat interval
+        const val ONCE_LOCKOUT_MS = 1500L  // pause after a PLAY / PAUSE
     }
 
     private val history = ArrayDeque<String>()
@@ -49,6 +54,7 @@ class GestureEngine(private val onAction: (Action) -> Unit) {
     private var since = 0L
     private var fired = false
     private var lastRepeat = 0L
+    private var lockUntil = 0L
 
     @Synchronized
     fun reset() {
@@ -58,6 +64,7 @@ class GestureEngine(private val onAction: (Action) -> Unit) {
         noHand = 0
         fired = false
         lastRepeat = 0L
+        lockUntil = 0L
     }
 
     @Synchronized
@@ -102,23 +109,41 @@ class GestureEngine(private val onAction: (Action) -> Unit) {
 
         if (def != null && hand) {
 
-            val elapsed = now - since
-
-            progress = min(1f, elapsed / def.dwellMs.toFloat())
-
             if (!def.repeat) {
 
                 if (fired) {
+
                     progress = 1f
-                } else if (elapsed >= def.dwellMs) {
-                    fired = true
-                    progress = 1f
-                    onAction(def.action)
+
+                } else if (now < lockUntil) {
+
+                    // locked after a recent PLAY / PAUSE: restart the hold
+                    since = now
+
+                } else {
+
+                    val elapsed = now - since
+
+                    progress = min(1f, elapsed / def.dwellMs.toFloat())
+
+                    if (elapsed >= def.dwellMs) {
+                        fired = true
+                        progress = 1f
+                        lockUntil = now + ONCE_LOCKOUT_MS
+                        onAction(def.action)
+                    }
                 }
 
-            } else if (elapsed >= def.dwellMs && now - lastRepeat >= REPEAT_MS) {
-                lastRepeat = now
-                onAction(def.action)
+            } else {
+
+                val elapsed = now - since
+
+                progress = min(1f, elapsed / def.dwellMs.toFloat())
+
+                if (elapsed >= def.dwellMs && now - lastRepeat >= REPEAT_MS) {
+                    lastRepeat = now
+                    onAction(def.action)
+                }
             }
 
         } else {
